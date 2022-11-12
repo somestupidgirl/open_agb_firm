@@ -28,44 +28,35 @@
 #include "arm11/patch.h"
 #include "arm11/power.h"
 #include "drivers/sha.h"
+#include "arm11/buffer.h"
 
 
-typedef struct
-{
-    u8 *buffer;
-    u16 cacheSize;
-    u16 cacheOffset;
-    u16 maxCacheSize;
-} Cache;
-
-
-
-static u8 readCache(const FHandle patchHandle, Cache *cache, Result *res) {
-    u8 result = (cache->buffer)[(cache->cacheOffset)++];
-    if((cache->cacheOffset) >= (cache->cacheSize)) {
-        (cache->cacheSize) = min((cache->maxCacheSize), ((fSize(patchHandle)-12) - fTell(patchHandle)));
-        *res = fRead(patchHandle, (cache->buffer), (cache->cacheSize), NULL);
-        (cache->cacheOffset) = 0;
-    }
-
-    return result;
-}
+/**
+ * @brief Apply an IPS patch
+ * 
+ * @details Used for applying an IPS patch to a game. Rom MUST be loaded into memory before use. Returns RES_OK if no errors occurred or 
+ *          RES_INVALID_PATCH if file is not an IPS patch (patch is not applied to game), returns a Result of the error otherwise
+ * 
+ * @param[in] patchHandle   An FHandle of the patch file
+ * 
+ * @return Result of operation
+ */
 
 static Result patchIPS(const FHandle patchHandle) {
 	Result res = RES_OK;
 	ee_puts("IPS patch found! Patching...");
 
-	const u16 bufferSize = 512;
-	char *buffer = (char*)calloc(bufferSize, 1);
-	if(buffer == NULL) {
-		return RES_OUT_OF_MEM;
-	}
+	Buffer buff = createBuffer(512);
+	if(buff.buffer == NULL) return RES_OUT_OF_MEM;
 
 	//verify patch is IPS patch (magic number "PATCH")
 	bool isValidPatch = false;
-	res = fRead(patchHandle, buffer, 5, NULL);
+	res = loadBuffer(patchHandle, &buff);
 	if(res == RES_OK) {
-		if(memcmp("PATCH", buffer, 5) == 0) {
+		char temp[5];
+		for (u8 i=0; i<5; ++i)
+			temp[i] = readBuffer(patchHandle, &buff, &res);
+		if(memcmp("PATCH", temp, 5) == 0) {
 			isValidPatch = true;
 		} else {
 			res = RES_INVALID_PATCH;
@@ -75,62 +66,69 @@ static Result patchIPS(const FHandle patchHandle) {
 	if(isValidPatch) {
 		u32 offset = 0;
 		u16 length = 0;
+		char miniBuffer[3]; //scratch for reading offset, length, and RLE hunks
 
 		while(res == RES_OK) {
-			//read offset
-			res = fRead(patchHandle, buffer, 3, NULL);
-			if (res != RES_OK || memcmp("EOF", buffer, 3)==0) break;
-			offset = (buffer[0]<<16) + (buffer[1]<<8) + (buffer[2]);
+			//Read offset
+			for(u8 i=0; i<3; ++i) {
+				miniBuffer[i] = readBuffer(patchHandle, &buff, &res);
+				if(res != RES_OK) break;
+			}
+			if (res != RES_OK || memcmp("EOF", miniBuffer, 3)==0) break;
+			offset = (miniBuffer[0]<<16) + (miniBuffer[1]<<8) + (miniBuffer[2]);
 
 			//read length
-			res = fRead(patchHandle, buffer, 2, NULL);
+			for(u8 i=0; i<2; ++i) {
+				miniBuffer[i] = readBuffer(patchHandle, &buff, &res);
+				if(res != RES_OK) break;
+			}
 			if(res != RES_OK) break;
-			length = (buffer[0]<<8) + (buffer[1]);
+			length = (miniBuffer[0]<<8) + (miniBuffer[1]);
 
 			//RLE hunk
 			if(length == 0) {
-				res = fRead(patchHandle, buffer, 3, NULL);
+				for(u8 i=0; i<3; ++i) {
+					miniBuffer[i] = readBuffer(patchHandle, &buff, &res);
+					if(res != RES_OK) break;
+				}
 				if(res != RES_OK) break;
 
-				u16 tempLen = (buffer[0]<<8) + (buffer[1]);
-				memset((void*)(ROM_LOC + offset), buffer[2], tempLen*sizeof(char));
+				u16 tempLen = (miniBuffer[0]<<8) + (miniBuffer[1]);
+				memset((void*)(ROM_LOC + offset), miniBuffer[2], tempLen*sizeof(char));
 			}
+
 			//regular hunks
 			else {
-				u16 fullCount = length/bufferSize;
-				for(u16 i=0; i<fullCount; ++i) {
-					res = fRead(patchHandle, buffer, bufferSize, NULL);
+				for(u16 i=0; i<length; ++i) {
+					*(char*)(ROM_LOC + offset + i) = readBuffer(patchHandle, &buff, &res);
 					if(res != RES_OK) break;
-					for(u16 j=0; j<bufferSize; ++j) {
-						*(char*)(ROM_LOC+offset+(bufferSize*i)+j) = buffer[j];
-					}
-				}
-
-				u16 remaining = length%bufferSize;
-				if(remaining != 0) {
-					res = fRead(patchHandle, buffer, remaining, NULL);
-					if(res != RES_OK) break;
-					for(u16 j=0; j<remaining; ++j) {
-						*(char*)(ROM_LOC+offset+(fullCount*bufferSize)+j) = buffer[j];
-					}
 				}
 			}
 		}
 	}
 
-	free(buffer);
+	freeBuffer(&buff);
 
 	return res;
 }
 
+/**
+ * @brief Reads a variable width integer
+ * 
+ * @param[in]     patchFile   FHandle of the patch file
+ * @param[in,out] res         Address of a Result
+ * @param[in,out] buff        Address of Buffer for the patch file
+ * 
+ * @return uintmax_t of the read integer
+ */
 //based on code from http://fileformats.archiveteam.org/wiki/UPS_(binary_patch_format) (CC0, No copyright)
-static uintmax_t read_vuint(const FHandle patchFile, Result *res, Cache *cache) {
+static uintmax_t read_vuint(const FHandle patchFile, Result *res, Buffer *buff) {
 	uintmax_t result = 0, shift = 0;
 
 	uint8_t octet = 0;
-	for (;;) {
+	while(1) {
 		//*res = fRead(patchFile, &octet, 1, NULL);
-        octet = readCache(patchFile, cache, res);
+        octet = readBuffer(patchFile, buff, res);
 		if(*res != RES_OK) break;
 		if(octet & 0x80) {
 			result += (octet & 0x7f) << shift;
@@ -143,23 +141,28 @@ static uintmax_t read_vuint(const FHandle patchFile, Result *res, Cache *cache) 
 	return result;
 }
 
+/**
+ * @brief Apply an UPS patch
+ * 
+ * @details Used for applying a UPS patch to a game. Rom MUST be loaded into memory before use. If patched size is larger than the current rom size, romSize is updated.
+ *          Returns RES_OK if no errors occurred or RES_INVALID_PATCH if file is not an UPS patch (patch is not applied to game), returns a Result of the error otherwise
+ * 
+ * @param[in]     patchHandle   An FHandle of the patch file
+ * @param[in,out] romSize       Address of current size of the loaded rom
+ * 
+ * @return Result of operation
+ */
 static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 	Result res = RES_OK;
 
-	Cache cache = {
-		(u8*)calloc(512, 1), //buffer
-		0,                   //cache size
-		0,                   //cache offset
-		512                  //max cache size
-	};
-	if(cache.buffer == NULL) {
+	Buffer buff = createBuffer(512);
+	if(buff.buffer == NULL) {
 		return RES_OUT_OF_MEM;
 	}
 
-	//read data into cache for first time
-	cache.cacheSize = min(cache.maxCacheSize, (fSize(patchHandle)-12)-fTell(patchHandle));
-	res = fRead(patchHandle, cache.buffer, cache.cacheSize, NULL);
-	if(res != RES_OK) { free(cache.buffer); return res; }
+	//read data into buffer for first time
+	res = loadBuffer(patchHandle, &buff);
+	if(res != RES_OK) { freeBuffer(&buff); return res; }
 
 	ee_puts("UPS patch found! Patching...");
 
@@ -167,7 +170,7 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 	u8 magic[] = {0x00, 0x00, 0x00, 0x00}; 
 	bool isValidPatch = false;
 	for(u8 i=0; i<4; i++) {
-		magic[i] = readCache(patchHandle, &cache, &res);
+		magic[i] = readBuffer(patchHandle, &buff, &res);
 		if(res != RES_OK) break;
 	}
 	
@@ -181,11 +184,11 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 
 	if(isValidPatch) {
         //get rom size
-		u32 baseRomSize = (u32)read_vuint(patchHandle, &res, &cache);
-		if(res != RES_OK) { free(cache.buffer); return res; }
+		u32 baseRomSize = (u32)read_vuint(patchHandle, &res, &buff);
+		if(res != RES_OK) { freeBuffer(&buff); return res; }
 		//get patched rom size
-		u32 patchedRomSize = (u32)read_vuint(patchHandle, &res, &cache);
-		if(res != RES_OK) { free(cache.buffer); return res; }
+		u32 patchedRomSize = (u32)read_vuint(patchHandle, &res, &buff);
+		if(res != RES_OK) { freeBuffer(&buff); return res; }
 
         debug_printf("Base size:    0x%lx\nPatched size: 0x%lx\n", baseRomSize, patchedRomSize);
 
@@ -195,7 +198,7 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 			//check if upscaled rom is too big
 			if(*romSize > MAX_ROM_SIZE) {
 				ee_puts("Patched ROM exceeds 32MB! Skipping patching...");
-				free(cache.buffer);
+				free(buff.buffer);
 				return RES_INVALID_PATCH; 
 			}
 
@@ -210,11 +213,11 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 		u8 *romBytes = ((u8*)ROM_LOC);
 
         while(fTell(patchHandle) < (patchFileSize-12) && res==RES_OK) {
-            offset += read_vuint(patchHandle, &res, &cache);
+            offset += read_vuint(patchHandle, &res, &buff);
             if(res != RES_OK) break;
 
 			while(offset<*romSize) {
-				readByte = readCache(patchHandle, &cache, &res);
+				readByte = readBuffer(patchHandle, &buff, &res);
                 if(res != RES_OK) break;
 
 				if(readByte == 0x00) {
@@ -228,18 +231,24 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
         
     }
 
-	free(cache.buffer);
+	freeBuffer(&buff);
 
 	return res;
 }
 
+/**
+ * @brief Applies a patch file to a rom
+ * 
+ * @details Looks for a potential patch file to apply. If both an IPS and UPS patch are found, preference is given to the IPS patch.
+ *          Returns RES_OK if no errors, returns Result of error otherwise
+ * 
+ * @param[in]     gamePath   String of the loaded rom
+ * @param[in,out] romSize    Size of currently loaded rom
+ * 
+ * @return Result of operation
+ */
 Result patchRom(const char *const gamePath, u32 *romSize) {
 	Result res = RES_OK;
-
-	//if X is held during launch, skip patching
-	hidScanInput();
-	if(hidKeysHeld() == KEY_X)
-		return res;
 
 	//get base path for game with 'gba' extension removed
 	int gamePathLength = strlen(gamePath) + 1; //add 1 for '\0' character
