@@ -37,6 +37,11 @@
  * @see{loadBuffer}
  */
 u8 readBuffer(const FHandle fileHandle, Buffer *buff, Result *res) {
+    if(buff == NULL || res == NULL) {
+        *res = RES_INVALID_ARG;
+        return 0;
+    }
+
     if(buff->bufferSize == 0) {
         *res = RES_OUT_OF_RANGE;
         return 0;
@@ -83,6 +88,8 @@ Buffer createBuffer(u16 maxBufferSize) {
  * @see Buffer
  */
 Result loadBuffer(const FHandle fileHandle, Buffer *buff) {
+    if(buff == NULL) return RES_INVALID_ARG;
+
     buff->bufferSize = min(buff->maxBufferSize, (fSize(fileHandle))-fTell(fileHandle));
 	Result res = fRead(fileHandle, buff->buffer, buff->bufferSize, NULL);
 	return res;

@@ -29,7 +29,15 @@
 #include "arm11/power.h"
 #include "drivers/sha.h"
 #include "arm11/buffer.h"
+#include "arm11/filebrowser.h"
+#include "drivers/gfx.h"
+#include "arm11/drivers/codec.h"
 
+#define MAX_PATH_SIZE 512
+#define MAX_BUFFER_SIZE 512
+#define PATCH_PATH_BASE "sdmc:/3ds/open_agb_firm/patches"
+
+#define endOffset(path, offset) path+strlen(path)-offset
 
 /**
  * @brief Apply an IPS patch
@@ -41,12 +49,10 @@
  * 
  * @return Result of operation
  */
-
 static Result patchIPS(const FHandle patchHandle) {
 	Result res = RES_OK;
-	ee_puts("IPS patch found! Patching...");
 
-	Buffer buff = createBuffer(512);
+	Buffer buff = createBuffer(MAX_BUFFER_SIZE);
 	if(buff.buffer == NULL) return RES_OUT_OF_MEM;
 
 	//verify patch is IPS patch (magic number "PATCH")
@@ -64,6 +70,7 @@ static Result patchIPS(const FHandle patchHandle) {
 	}
 
 	if(isValidPatch) {
+		ee_puts("IPS patch found! Patching...");
 		u32 offset = 0;
 		u16 length = 0;
 		char miniBuffer[3]; //scratch for reading offset, length, and RLE hunks
@@ -153,9 +160,11 @@ static uintmax_t read_vuint(const FHandle patchFile, Result *res, Buffer *buff) 
  * @return Result of operation
  */
 static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
+	if (romSize == NULL) return RES_INVALID_ARG;
+
 	Result res = RES_OK;
 
-	Buffer buff = createBuffer(512);
+	Buffer buff = createBuffer(MAX_BUFFER_SIZE);
 	if(buff.buffer == NULL) {
 		return RES_OUT_OF_MEM;
 	}
@@ -163,8 +172,6 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 	//read data into buffer for first time
 	res = loadBuffer(patchHandle, &buff);
 	if(res != RES_OK) { freeBuffer(&buff); return res; }
-
-	ee_puts("UPS patch found! Patching...");
 
 	//verify patch is UPS (magic number is "UPS1")
 	u8 magic[] = {0x00, 0x00, 0x00, 0x00}; 
@@ -183,6 +190,8 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 	}
 
 	if(isValidPatch) {
+		ee_puts("UPS patch found! Patching...");
+
         //get rom size
 		u32 baseRomSize = (u32)read_vuint(patchHandle, &res, &buff);
 		if(res != RES_OK) { freeBuffer(&buff); return res; }
@@ -237,79 +246,307 @@ static Result patchUPS(const FHandle patchHandle, u32 *romSize) {
 }
 
 /**
- * @brief Applies a patch file to a rom
+ * @brief Applies provided patch to rom
  * 
- * @details Looks for a potential patch file to apply. If both an IPS and UPS patch are found, preference is given to the IPS patch.
- *          Returns RES_OK if no errors, returns Result of error otherwise
- * 
- * @param[in]     gamePath   String of the loaded rom
- * @param[in,out] romSize    Size of currently loaded rom
+ * @param[in]     patchPath   FHandle of patch file
+ * @param[in,out] romSize     Size of currently loaded rom
  * 
  * @return Result of operation
  */
-Result patchRom(const char *const gamePath, u32 *romSize) {
+static Result applyPatch(FHandle patchFile, u32 *romSize) {
 	Result res = RES_OK;
+	res = fLseek(patchFile, 0);
+	if (res != RES_OK) return res;
 
-	//get base path for game with 'gba' extension removed
-	int gamePathLength = strlen(gamePath) + 1; //add 1 for '\0' character
-	const int extensionOffset = gamePathLength-4;
-	char *patchPathBase = (char*)calloc(gamePathLength, 1);
-
-	char *patchPath = (char*)calloc(512, 1);
-
-	if(patchPathBase != NULL && patchPath != NULL) {
-		strcpy(patchPathBase, gamePath);
-		memset(patchPathBase+extensionOffset, '\0', 3); //replace 'gba' with '\0' characters
-		
-		FHandle f;
-		//check if patch file is present. If so, call appropriate patching function
-		if((res = fOpen(&f, strcat(patchPathBase, "ips"), FA_OPEN_EXISTING | FA_READ)) == RES_OK)
-		{
-			res = patchIPS(f);
-
-			if(res != RES_OK && res != RES_INVALID_PATCH) {
-				ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
-				while(1){
-					hidScanInput();
-					if(hidKeysHeld() == (KEY_Y | KEY_DUP) && hidKeysDown() != 0) break;
-					if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) power_off();
-				}
-			}
-
-			fClose(f);
-			goto cleanup;
-		}
-		//reset patchPathBase
-		memset(patchPathBase+extensionOffset, '\0', 3);
-		
-		if ((res = fOpen(&f, strcat(patchPathBase, "ups"), FA_OPEN_EXISTING | FA_READ)) == RES_OK) 
-		{
-			res = patchUPS(f, romSize);
-
-			if(res != RES_OK && res != RES_INVALID_PATCH) {
-				ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
-				while(1){
-					hidScanInput();
-					if(hidKeysHeld() == (KEY_Y | KEY_DUP) && hidKeysDown() != 0) break;
-					if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) power_off();
-				}
-			}
-
-			fClose(f);
-			goto cleanup;
+	if((res = patchIPS(patchFile)), res == RES_OK) {
+		return res;
+	}
+	else if(res != RES_INVALID_PATCH) {
+		ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
+#ifndef NDEBUG
+		ee_printf("Error Code: 0x%lX", res);
+#endif
+		while(1){
+			hidScanInput();
+			if(hidKeysHeld() == (KEY_Y | KEY_DUP) && hidKeysDown() != 0) break;
+			if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) power_off();
 		}
 
-	} else {
-		res = RES_OUT_OF_MEM;
+		return res;
 	}
 
+	//reset file position
+	res = fLseek(patchFile, 0);
+	if (res != RES_OK) return res;
+
+	if((res = patchUPS(patchFile, romSize)), res == RES_OK) {
+		return res;
+	}
+	else if(res != RES_INVALID_PATCH) {
+		ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
+#ifndef NDEBUG
+		ee_printf("Error Code: 0x%lX", res);
+#endif
+		while(1){
+			hidScanInput();
+			if(hidKeysHeld() == (KEY_Y | KEY_DUP) && hidKeysDown() != 0) break;
+			if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) power_off();
+		}
+
+		return res;
+	}
+
+	return res;
+}
+
+/**
+ * @brief Scan for ONLY FILES in a given directory
+ * 
+ * @param[in]     path     Path to scan
+ * @param[in,out] dList    DirList to store detected files
+ * @param [in]    filter   File extension to search for
+ * 
+ * @return Result of operation
+ */
+Result scanFiles(const char *const path, DirList *const dList, const char *const filter)
+{
+	FILINFO *const fis = (FILINFO*)malloc(sizeof(FILINFO) * DIR_READ_BLOCKS);
+	if(fis == NULL) return RES_OUT_OF_MEM;
+
+	dList->num = 0;
+
+	Result res;
+	DHandle dh;
+	if((res = fOpenDir(&dh, path)) == RES_OK)
+	{
+		u32 read;           // Number of entries read by fReadDir().
+		u32 numEntries = 0; // Total number of processed entries.
+		u32 entBufPos = 0;  // Entry buffer position/number of bytes used.
+		const u32 filterLen = strlen(filter);
+		do
+		{
+			if((res = fReadDir(dh, fis, DIR_READ_BLOCKS, &read)) != RES_OK) break;
+			read = (read <= MAX_DIR_ENTRIES - numEntries ? read : MAX_DIR_ENTRIES - numEntries);
+
+			for(u32 i = 0; i < read; i++)
+			{
+				if(fis[i].fattrib & AM_DIR) continue; //skip over any directory
+				const char entType = ENT_TYPE_FILE;
+				const u32 nameLen = strlen(fis[i].fname);
+				if(nameLen <= filterLen || strcmp(filter, fis[i].fname + nameLen - filterLen) != 0)
+					continue;
+				
+
+				// nameLen does not include the entry type and NULL termination.
+				if(entBufPos + nameLen + 2 > MAX_ENT_BUF_SIZE) goto scanEnd;
+
+				char *const entry = &dList->entBuf[entBufPos];
+				*entry = entType;
+				safeStrcpy(&entry[1], fis[i].fname, 256);
+				dList->ptrs[numEntries++] = entry;
+				entBufPos += nameLen + 2;
+			}
+		} while(read == DIR_READ_BLOCKS);
+
+scanEnd:
+		dList->num = numEntries;
+
+		fCloseDir(dh);
+	}
+
+	free(fis);
+
+	qsort(dList->ptrs, dList->num, sizeof(char*), dlistCompare);
+
+	return res;
+}
+
+/**
+ * @brief Run patching logic
+ * 
+ * @details Looks for a potential patch file to apply. If single patch and patch folder are present, preference is given to the single file.
+ *          If single IPS and single UPS are present, preference is given to IPS file. Returns RES_OK if no errors, returns Result of error otherwise
+ * 
+ * @param[in]     gamePath   Path of the loaded rom
+ * @param[in,out] romSize    Size of currently loaded rom
+ * @param[in,out] savePath   Path fo the game save file
+ * 
+ * @return Result of operation
+ */
+Result patchRom(const char *const gamePath, u32 *romSize, char* savePath) {
+	Result res = RES_OK;
+	FHandle patchFile;
+
+	//OPTIMIZE TO REMOVE patchPath
+	char *patchPath = (char*)calloc(MAX_PATH_SIZE, 1);
+	char *workingPath = (char*)calloc(MAX_PATH_SIZE, 1);
+
+	if(patchPath != NULL && workingPath != NULL) {
+		strcpy(workingPath, gamePath);
+		memset(endOffset(workingPath, 3), '\0', 3); //replace 'gba' with '\0' characters
+
+		// Check for single patch file
+		if((res = fOpen(&patchFile, strncat(workingPath, "ips", MAX_PATH_SIZE-1), FA_OPEN_EXISTING | FA_READ)) == RES_OK) {
+			res = applyPatch(patchFile, romSize);
+			fClose(patchFile);
+			goto cleanup;
+		}
+		else if(( *(endOffset(workingPath, 3)) = '\0', res = fOpen(&patchFile, strncat(workingPath, "ups", MAX_PATH_SIZE-1), FA_OPEN_EXISTING | FA_READ)) == RES_OK) {
+			res = applyPatch(patchFile, romSize);
+			fClose(patchFile);
+			goto cleanup;
+		}
+		else if(( *(endOffset(workingPath, 3)) = '\0', res = fOpen(&patchFile, strncat(workingPath, "patch", MAX_PATH_SIZE-1), FA_OPEN_EXISTING | FA_READ)) == RES_OK) {
+			res = applyPatch(patchFile, romSize);
+			fClose(patchFile);
+			goto cleanup;
+		}
+
+
+		// Check patch folder
+		//get path of patch folder
+		size_t breakPos = strlen(gamePath);
+		if (gamePath[breakPos] == '/' && breakPos != 0) breakPos--; //if end of path is a '/', then we want to remove it
+		for(; gamePath[breakPos] != '/' && breakPos != 0; --breakPos); //break pos *should* never reach 0 ("sdmc:" is part of path), but better safe than sorry
+
+		//if breakPos *does* manage to reach 0, something has gone wrong
+		if(breakPos == 0) {
+			ee_puts("An unexpected error has occurred!");
+			res = RES_FR_INT_ERR;
+			goto cleanup;
+		}
+
+		//create new workingPath
+		char *gameName = malloc( strlen(gamePath)-breakPos+1 );
+		strncpy(gameName, gamePath+breakPos, strlen(gamePath)-breakPos+1);
+		strncpy(workingPath, PATCH_PATH_BASE, MAX_PATH_SIZE-1);
+		strncat(workingPath, gameName, MAX_PATH_SIZE-1);
+		
+		*(endOffset(workingPath, 4)) = '\0';
+
+		DirList *const patchList = (DirList*)malloc(sizeof(DirList));
+		if(patchList == NULL) {
+			res = RES_OUT_OF_MEM;
+			goto cleanup;
+		}
+
+		//check if patch folder exists
+		DHandle tempDir;
+		if((res = fOpenDir(&tempDir, workingPath)) != RES_OK) {
+			ee_printf("Bad directory: %s\n", workingPath);
+			free(patchList);
+			if(res == RES_FR_NO_PATH) res = RES_OK;
+			goto cleanup; 
+		}
+		fCloseDir(tempDir);
+
+		//get all ".patch" files
+		if((res = scanFiles(workingPath, patchList, ".patch")) != RES_OK) {
+			free(patchList);
+			goto cleanup;
+		}
+		
+		//Open patch browser
+		if((patchList->num) == 0) {
+			free(patchList);
+			goto cleanup;
+		}
+
+		//Pretty much all of this code is a copy of browseFiles(), may be able to remove it with slight changes to browseFiles()
+		s32 cursorPos = 0;
+		s32 oldCursorPos = 0;
+		u32 windowPos = 0;
+		showDirList(patchList, 0);
+
+		u32 kDown = 0;
+		while (1) {
+			ee_printf("\x1b[%lu;H ", oldCursorPos - windowPos);      // Clear old cursor.
+			ee_printf("\x1b[%lu;H\x1b[37m>", cursorPos - windowPos); // Draw cursor.
+
+			do
+			{
+				GFX_waitForVBlank0();
+
+				hidScanInput();
+				if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) {
+					CODEC_deinit();
+					GFX_deinit();
+					fUnmount(FS_DRIVE_SDMC);
+
+					power_off();
+				}
+				kDown = hidKeysDown();
+			} while(kDown == 0);
+
+			oldCursorPos = cursorPos;
+
+			if(kDown & KEY_A) {
+				ee_printf("\x1b[2J"); //clear screen
+				//open file
+				FHandle patch;
+				strncpy(patchPath, strncat(workingPath, "/", MAX_PATH_SIZE-1), MAX_PATH_SIZE);
+
+				strncat(patchPath, &patchList->ptrs[cursorPos][1], MAX_PATH_SIZE-1);
+				if((res = fOpen(&patch, patchPath, FA_OPEN_EXISTING | FA_READ)) != RES_OK) break;
+				
+				res = applyPatch(patch, romSize);
+				if (res != RES_OK && res != RES_INVALID_PATCH) {
+					fClose(patch);
+					break;
+				}
+
+				//adjust save path to prevent patched save conflicts
+				strncpy(savePath, workingPath, MAX_PATH_SIZE-1);
+				strncat(savePath, "saves/", MAX_PATH_SIZE-1);
+				strncat(savePath, &patchList->ptrs[cursorPos][1], MAX_PATH_SIZE-1);
+				*(endOffset(savePath, 5)) = '\0';
+				strncat(savePath, "sav", MAX_PATH_SIZE-1);
+
+				res = fClose(patch);
+				break;
+			}
+			if(kDown & KEY_X) break;
+
+			if(kDown & KEY_DRIGHT)
+			{
+				cursorPos += SCREEN_ROWS;
+				if((u32)cursorPos > (patchList->num)) cursorPos = (patchList->num) - 1;
+			}
+			if(kDown & KEY_DLEFT)
+			{
+				cursorPos -= SCREEN_ROWS;
+				if(cursorPos < -1) cursorPos = 0;
+			}
+
+			if(kDown & KEY_DDOWN) cursorPos++;
+			if(kDown & KEY_DUP) cursorPos--;
+
+			if(cursorPos < 0) cursorPos = (patchList->num) - 1; //wrap at beginning
+			if((u32)cursorPos >= (patchList->num)) cursorPos = 0; //wrap at end
+
+			if((u32)cursorPos < windowPos)
+			{
+				windowPos = cursorPos;
+				showDirList(patchList, windowPos);
+			}
+			if((u32)cursorPos >= windowPos + SCREEN_ROWS)
+			{
+				windowPos = cursorPos - (SCREEN_ROWS - 1);
+				showDirList(patchList, windowPos);
+			}
+
+		}
+
+		free(patchList);
+	}
+	else res = RES_OUT_OF_MEM;
+
 cleanup:
-	//cleanup our resources
 	free(patchPath);
-	free(patchPathBase);
+	free(workingPath);
 
 	if(res == RES_INVALID_PATCH) {
-		ee_puts("Patch is not valid! Skipping...\n");
+		ee_puts("No valid patch found! Skipping...\n");
 	} 
 #ifndef NDEBUG	
 	else {

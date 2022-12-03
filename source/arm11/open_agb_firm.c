@@ -169,7 +169,7 @@ static Result loadGbaRom(const char *const path, u32 *const romSizeOut)
 		res = fRead(f, (u8*)ROM_LOC, fileSize, &read);
 		fClose(f);
 
-		if(read == fileSize) *romSizeOut = fixRomPadding(fileSize); //, path);
+		if(read == fileSize) *romSizeOut = fixRomPadding(fileSize);
 
 	}
 
@@ -755,6 +755,7 @@ Result oafInitAndRun(void)
 			else if(res != RES_OK) break;
 
 			//make copy of rom path
+			//MOVE TO PATCH-SKIP CHECK?
 			char *const romFilePath = (char*)calloc(strlen(filePath)+1, 1);
 			if(romFilePath == NULL) { res = RES_OUT_OF_MEM; break; }
 			strcpy(romFilePath, filePath);
@@ -768,7 +769,6 @@ Result oafInitAndRun(void)
 			if((res = parseOafConfig(filePath, false)) != RES_OK && res != RES_FR_NO_FILE) break;
 
 			// Adjust the path for the save file and get save type.
-			gameCfg2SavePath(filePath, g_oafConfig.saveSlot);
 			u16 saveType;
 			if(g_oafConfig.saveType != 0xFF)
 				saveType = g_oafConfig.saveType;
@@ -777,8 +777,13 @@ Result oafInitAndRun(void)
 			else
 				saveType = detectSaveType(romSize);
 
-			patchRom(romFilePath, &romSize);
+			//if X is held during launch, skip patching
+			hidScanInput();
+			if(hidKeysHeld() != KEY_X)
+				patchRom(romFilePath, &romSize, filePath);
 			free(romFilePath);
+
+			gameCfg2SavePath(filePath, g_oafConfig.saveSlot);
 
 			// Prepare ARM9 for GBA mode + save loading.
 			if((res = LGY_prepareGbaMode(g_oafConfig.directBoot, saveType, filePath)) == RES_OK)
