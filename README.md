@@ -32,8 +32,6 @@ X+LEFT - Turn off LCD backlight.
 
 X+RIGHT - Turn on LCD backlight.
 
-Hold the X button while launching a game to skip applying patches (if present)
-
 Hold the power button to turn off the 3DS.
 
 ## Configuration
@@ -104,8 +102,14 @@ Options for advanced users. No pun intended.
   * `15`: None
 
 ## Patches
-open_agb_firm supports automatically applying IPS and UPS patches. To use a patch, rename the patch file to match the ROM file name (without the extension).
+open_agb_firm supports automatically applying IPS and UPS patches. If you only plan to use one patch, you can place it in the same folder as your ROM and rename it to match your ROM's name (without the extension).
 * If you wanted to apply an IPS patch to `example.gba`, rename the patch file to `example.ips`
+* **This will replace any existing save**, so make a backup or make sure saves are compadible
+
+If you want to use multiple patches, place each patch in `/3ds/open_agb_firm/patches/<ROM Name>/` and change the extension to `.patch`
+* Each patch will have its own save
+* Press X on patch selection screen to skip applying a patch. This will default to using the default game save
+
 
 ## Known Issues
 This section is reserved for a listing of known issues. At present only this remains:
@@ -142,9 +146,6 @@ A: Of course! While open_agb_firm does run with full hardware access, a lot of w
 
 **Q: What games work with open_agb_firm?**\
 A: In theory, all of them, except those that fall within the [hardware limitations](#hardware-limitations).
-
-**Q: How can I increase the brightness?**\
-A: Increase the value of the `backlight` setting in `config.ini`. See [Configuration](#configuration) for more information.
 
 **Q: Why do the colors look off?**\
 A: The default gamma settings are intended to make up for the washed out colors the 3DS LCD has. If they look weird to you, setting the `outGamma` setting to `2.2` might help.
