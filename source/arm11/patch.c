@@ -25,6 +25,7 @@
 #include "drivers/lgy.h"
 #include "arm11/fmt.h"
 #include "fs.h"
+#include "fsutil.h"
 #include "arm11/patch.h"
 #include "arm11/power.h"
 #include "drivers/sha.h"
@@ -264,7 +265,7 @@ static Result applyPatch(FHandle patchFile, u32 *romSize) {
 	else if(res != RES_INVALID_PATCH) {
 		ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
 #ifndef NDEBUG
-		ee_printf("Error Code: 0x%lX", res);
+		ee_printf("Error Code: %s", result2String(res));
 #endif
 		while(1){
 			hidScanInput();
@@ -285,7 +286,7 @@ static Result applyPatch(FHandle patchFile, u32 *romSize) {
 	else if(res != RES_INVALID_PATCH) {
 		ee_puts("An error has occurred while patching.\nContinuing is NOT recommended!\n\nPress Y+UP to proceed");
 #ifndef NDEBUG
-		ee_printf("Error Code: 0x%lX", res);
+		ee_printf("Error Code: %s", result2String(res));
 #endif
 		while(1){
 			hidScanInput();
@@ -498,6 +499,40 @@ Result patchRom(const char *const gamePath, u32 *romSize, char* savePath) {
 				//adjust save path to prevent patched save conflicts
 				strncpy(savePath, workingPath, MAX_PATH_SIZE-1);
 				strncat(savePath, "saves/", MAX_PATH_SIZE-1);
+
+				//verify "saves" folder exists
+				if((res = fOpenDir(&tempDir, savePath)) != RES_OK) {
+					if(res == RES_FR_NO_PATH) {
+						res = fsMakePath(savePath);
+						if(res != RES_OK) {
+							ee_printf("An error has occurred while creating for folder %s\n%s", savePath, result2String(res));
+							while (1) {
+								hidScanInput();
+								if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) {
+									CODEC_deinit();
+									GFX_deinit();
+									fUnmount(FS_DRIVE_SDMC);
+
+									power_off();
+								}
+							}
+						}
+					} else {
+						ee_printf("An error has occurred while checking for folder %s\n%s", savePath, result2String(res));
+						while (1) {
+							hidScanInput();
+							if(hidGetExtraKeys(0) & (KEY_POWER_HELD | KEY_POWER)) {
+								CODEC_deinit();
+								GFX_deinit();
+								fUnmount(FS_DRIVE_SDMC);
+
+								power_off();
+							}
+						}
+					}
+				}
+				fCloseDir(tempDir);
+
 				strncat(savePath, &patchList->ptrs[cursorPos][1], MAX_PATH_SIZE-1);
 				*(endOffset(savePath, 5)) = '\0';
 				strncat(savePath, "sav", MAX_PATH_SIZE-1);
