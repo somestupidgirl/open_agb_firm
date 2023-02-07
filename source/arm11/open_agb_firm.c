@@ -16,6 +16,11 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+ /*
+  * Adjusting display values (other than screen brightness) causes issues with color
+  * Does not seem to effect gameplay
+  */
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +61,12 @@
                         "lcdGamma=1.54\n"         \
                         "contrast=1.0\n"          \
                         "brightness=0.0\n\n"      \
+						"[advanceVideo]\n"        \
+						"advanceDisplayControl=false\n" \
+						"gbaGammaStep=0.1\n"     \
+						"lcdGammaStep=0.1\n"     \
+						"contrastStep=0.01\n"     \
+						"brightnessStep=0.01\n\n" \
                         "[advanced]\n"            \
                         "saveOverride=false\n"    \
                         "defaultSave=14"
@@ -74,6 +85,13 @@ typedef struct
 	float lcdGamma;
 	float contrast;
 	float brightness;
+
+	// [advanceVideo]
+	bool advanceDisplayControl;
+	float gbaGammaStep;
+	float lcdGammaStep;
+	float contrastStep;
+	float brightnessStep;
 
 	// [game]
 	u8 saveSlot;
@@ -109,6 +127,13 @@ static OafConfig g_oafConfig =
 	1.f,   // contrast
 	0.f,   // brightness
 
+	// [advanceVideo]
+	false, // advanceDisplayControl
+	0.05f, // gbaGammaStep
+	0.05f, // lcdGammaStep
+	0.05f, // contrastStep
+	0.05f, // brightnessStep
+
 	// [game]
 	0,     // saveSlot
 	0xFF,    // saveType
@@ -117,6 +142,20 @@ static OafConfig g_oafConfig =
 	false, // saveOverride
 	14     // defaultSave
 };
+
+typedef struct {
+	float gbaGamma;
+	float lcdGamma;
+	float contrast;
+	float brightness;
+} DefaultDisplayConfig;
+static DefaultDisplayConfig g_defaultDisplayConf = {
+	0,
+	0,
+	0,
+	0,
+};
+
 static KHandle g_frameReadyEvent = 0;
 
 static u32 fixRomPadding(u32 romFileSize)
@@ -427,12 +466,21 @@ static void adjustGammaTableForGba(void)
 	const float lcdGamma = g_oafConfig.lcdGamma;
 	const float contrast = g_oafConfig.contrast;
 	const float brightness = g_oafConfig.brightness;
+
+	//only need to calc these once
+	const float a = powf(contrast, gbaGamma);
+	const float b = brightness / contrast;
+	const float c = 1.0f / lcdGamma;
+
 	for(u32 i = 0; i < 256; i++)
 	{
 		// Credits for this algo go to Extrems.
 		// Originally from Game Boy Interface Standard Edition for the GameCube.
-		u32 res = powf(powf(contrast, gbaGamma) * powf((float)i / 255.0f + brightness / contrast, gbaGamma),
-		               1.0f / lcdGamma) * 255.0f;
+		/*u32 res = powf(powf(contrast, gbaGamma) * powf((float)i / 255.0f + brightness / contrast, gbaGamma),
+		               1.0f / lcdGamma) * 255.0f;*/
+
+		u32 res = powf(a * powf((float)i / 255.0f + b, gbaGamma),
+		               c) * 255.0f;
 
 		// Same adjustment for red/green/blue.
 		REG_LCD_PDC0_GTBL_FIFO = res<<16 | res<<8 | res;
@@ -537,14 +585,30 @@ static int cfgIniCallback(void* user, const char* section, const char* name, con
 	{
 		if(strcmp(name, "scaler") == 0)
 			config->scaler = (u8)strtoul(value, NULL, 10);
-		else if(strcmp(name, "gbaGamma") == 0)
+		else if(strcmp(name, "gbaGamma") == 0) {
 			config->gbaGamma = str2float(value);
-		else if(strcmp(name, "lcdGamma") == 0)
+		}
+		else if(strcmp(name, "lcdGamma") == 0) {
 			config->lcdGamma = str2float(value);
-		else if(strcmp(name, "contrast") == 0)
+		}
+		else if(strcmp(name, "contrast") == 0) {
 			config->contrast = str2float(value);
-		else if(strcmp(name, "brightness") == 0)
+		}
+		else if(strcmp(name, "brightness") == 0) {
 			config->brightness = str2float(value);
+		}
+	}
+	else if(strcmp(section, "advanceVideo") == 0) {
+		if(strcmp(name, "advanceDisplayControl") == 0)
+			config->advanceDisplayControl = (strcmp(value, "false") == 0 ? false : true);
+		else if(strcmp(name, "gbaGammaStep") == 0)
+			config->gbaGammaStep = str2float(value);
+		else if(strcmp(name, "lcdGammaStep") == 0)
+			config->lcdGammaStep = str2float(value);
+		else if(strcmp(name, "contrastStep") == 0)
+			config->contrastStep = str2float(value);
+		else if(strcmp(name, "brightnessStep") == 0)
+			config->brightnessStep = str2float(value);
 	}
 	else if(strcmp(section, "game") == 0)
 	{
@@ -580,6 +644,11 @@ static Result parseOafConfig(const char *const path, const bool writeDefaultCfg)
 
 	free(iniBuf);
 
+	g_defaultDisplayConf.brightness = g_oafConfig.brightness;
+	g_defaultDisplayConf.contrast   = g_oafConfig.contrast;
+	g_defaultDisplayConf.gbaGamma   = g_oafConfig.gbaGamma;
+	g_defaultDisplayConf.lcdGamma   = g_oafConfig.lcdGamma;
+
 	return res;
 }
 
@@ -603,45 +672,6 @@ void changeBacklight(s16 amount)
 	g_oafConfig.backlight = (u8)newVal;
 
 	GFX_setBrightness((u8)newVal, (u8)newVal);
-}
-
-static void updateBacklight(void)
-{
-	// Check for special button combos.
-	const u32 kHeld = hidKeysHeld();
-	static bool backlightOn = true;
-	if(hidKeysDown() && kHeld)
-	{
-		// Adjust LCD brightness up.
-		const s16 steps = g_oafConfig.backlightSteps;
-		if(kHeld == (KEY_X | KEY_DUP))
-			changeBacklight(steps);
-
-		// Adjust LCD brightness down.
-		if(kHeld == (KEY_X | KEY_DDOWN))
-			changeBacklight(-steps);
-
-		// Disable backlight switching in debug builds on 2DS.
-		const GfxBlight lcd = (MCU_getSystemModel() != 3 ? GFX_BLIGHT_TOP : GFX_BLIGHT_BOT);
-#ifndef NDEBUG
-		if(lcd != GFX_BLIGHT_BOT)
-#endif
-		{
-			// Turn off backlight.
-			if(backlightOn && kHeld == (KEY_X | KEY_DLEFT))
-			{
-				backlightOn = false;
-				GFX_powerOffBacklights(lcd);
-			}
-
-			// Turn on backlight.
-			if(!backlightOn && kHeld == (KEY_X | KEY_DRIGHT))
-			{
-				backlightOn = true;
-				GFX_powerOnBacklights(lcd);
-			}
-		}
-	}
 }
 
 static Result showFileBrowser(char romAndSavePath[512])
@@ -816,10 +846,219 @@ Result oafInitAndRun(void)
 	return res;
 }
 
+//can probably turn this into a struct of some sort
+const u8 minBacklightA    = 16;
+const u8 minBacklightB    = 20;
+const u8 maxBacklightA    = 142;
+const u8 maxBacklightB    = 117;
+const float minGbaGamma   = 0.0;
+const float maxGbaGamma   = 4.4;
+const float minLcdGamma   = 0.0;
+const float maxLcdGamma   = 3.08;
+const float minContrast   = 1.0;
+const float maxContrast   = 3.0;
+const float minBrightness = 0.0;
+const float maxBrightness = 2.0;
+
+union DisplayValue {
+	u8    u;
+	float f;
+};
+
+/*
+// split calculation of gamma tabel down over multiple frames to avoid timing issues?
+static void slowAdjustGammaTableForGba(bool firstRun)
+{
+	static u8 frame = 0;
+	static float a = 0;
+	static float b = 0;
+	static float c = 0;
+	static float gbaGamma = 0;
+	static float lcdGamma = 0;
+	static float contrast = 0;
+	static float brightness = 0;
+
+	if (firstRun && frame) return;
+
+	if (firstRun || frame) {
+		if (!frame) {
+			gbaGamma = g_oafConfig.gbaGamma;
+			lcdGamma = g_oafConfig.lcdGamma;
+			contrast = g_oafConfig.contrast;
+			brightness = g_oafConfig.brightness;
+
+			a = powf(contrast, gbaGamma);
+			b = brightness / contrast;
+			c = 1.0f / lcdGamma;
+
+			GFX_waitForVBlank0();
+		}
+
+		///u32 offset = frame * 4;
+
+		for(u32 i = 0; i < 256; i++)
+		{
+			//u32 j = i + offset;
+			// Credits for this algo go to Extrems.
+			// Originally from Game Boy Interface Standard Edition for the GameCube.
+			u32 res = powf(a * powf((float)i / 255.0f + b, gbaGamma), c) * 255.0f;
+
+			// Same adjustment for red/green/blue.
+			REG_LCD_PDC0_GTBL_FIFO = res<<16 | res<<8 | res;
+		}
+		//frame++;
+		//if (frame == 64) frame = 0;
+	}
+
+	GFX_waitForVBlank0();
+}
+*/
+
+static void adjustDisplaySettings() {
+	static bool firstRun = true;
+	static bool backlightOn = true;
+
+	static u8 displayControlMode = 0;
+	static bool changedDisplaySettings = false;
+
+	static void* selectedSetting; // = &(g_oafConfig.backlight);
+	static union DisplayValue settingStep;
+	static union DisplayValue minVal;
+	static union DisplayValue maxVal;
+	static float defaultVal = 0;
+
+	//init our static vars
+	if (firstRun) {
+		selectedSetting = &(g_oafConfig.backlight);
+		settingStep.u = g_oafConfig.backlightSteps;
+
+		firstRun = false;
+	}
+
+	const u32 kHeld = hidKeysHeld();
+	const u32 kDown = hidKeysDown();
+	if(g_oafConfig.advanceDisplayControl && kDown && kHeld) {
+		if(kDown & KEY_Y) {
+			//change mode
+			displayControlMode = ++displayControlMode < 5 ? displayControlMode : 0;
+
+			//print mode to bottom screen
+			switch(displayControlMode) {
+				case 0:
+					ee_puts("\x1b[2JBacklight");
+					selectedSetting = &(g_oafConfig.backlight);
+					settingStep.u = g_oafConfig.backlightSteps;
+					break;
+				case 1:
+					ee_puts("\x1b[2JGBA Gamma");
+					selectedSetting = &(g_oafConfig.gbaGamma);
+					settingStep.f = g_oafConfig.gbaGammaStep;
+					minVal.f = minGbaGamma;
+					maxVal.f = maxGbaGamma;
+					defaultVal = g_defaultDisplayConf.gbaGamma;
+					break;
+					//displayControlMode++;
+				case 2:
+					ee_puts("\x1b[2JLCD Gamma");
+					selectedSetting = &(g_oafConfig.lcdGamma);
+					settingStep.f = g_oafConfig.lcdGammaStep;
+					minVal.f = minLcdGamma;
+					maxVal.f = maxLcdGamma;
+					defaultVal = g_defaultDisplayConf.lcdGamma;
+					break;
+				case 3:
+					ee_printf("\x1b[2JContrast\n");
+					selectedSetting = &(g_oafConfig.contrast);
+					settingStep.f = g_oafConfig.contrastStep;
+					minVal.f = minContrast;
+					maxVal.f = maxContrast;
+					defaultVal = g_defaultDisplayConf.contrast;
+					break;
+				case 4:
+					ee_printf("\x1b[2JBrightness\n");
+					selectedSetting = &(g_oafConfig.brightness);
+					settingStep.f = g_oafConfig.brightnessStep;
+					minVal.f = minBrightness;
+					maxVal.f = maxBrightness;
+					defaultVal = g_defaultDisplayConf.brightness;
+					break;
+			}
+		}
+		//Display
+		else if(displayControlMode && (kHeld & KEY_X)) {
+			if(kHeld == (KEY_DDOWN | KEY_X)) {
+				float newVal = *(float *)selectedSetting - settingStep.f;
+				*(float *)selectedSetting = newVal < minVal.f ? minVal.f : newVal;
+				changedDisplaySettings = true;
+			}
+			if(kHeld == (KEY_DUP | KEY_X)) {
+				float newVal = *(float *)selectedSetting + settingStep.f;
+				*(float *)selectedSetting = newVal > maxVal.f ? maxVal.f : newVal;
+				changedDisplaySettings = true;
+			}
+			if(kHeld == (KEY_DLEFT | KEY_X)) {
+				*(float *)selectedSetting = defaultVal;
+				changedDisplaySettings = true;
+			}
+		}
+		//Backlight
+		else if(!displayControlMode && (kHeld & KEY_X)) {
+			if(kHeld == (KEY_DDOWN | KEY_X)) {
+				changeBacklight(-settingStep.u);
+			}
+			if(kHeld == (KEY_DUP | KEY_X)) {
+				changeBacklight(settingStep.u);
+			}
+			if(kHeld == (KEY_DLEFT | KEY_X)) {
+				const GfxBlight lcd = (MCU_getSystemModel() != 3 ? GFX_BLIGHT_TOP : GFX_BLIGHT_BOT);
+				if(backlightOn) {
+					GFX_powerOffBacklights(lcd);
+				} else {
+					GFX_powerOnBacklights(lcd);
+				}
+				backlightOn = !backlightOn;
+			}
+		}
+	} else if (kDown && kHeld) {
+		if((kHeld & KEY_X)) {
+			if(kHeld == (KEY_DDOWN | KEY_X)) {
+				changeBacklight(-settingStep.u);
+			}
+			if(kHeld == (KEY_DUP | KEY_X)) {
+				changeBacklight(settingStep.u);
+			}
+			if(kHeld == (KEY_DLEFT | KEY_X)) {
+				const GfxBlight lcd = (MCU_getSystemModel() != 3 ? GFX_BLIGHT_TOP : GFX_BLIGHT_BOT);
+				if(backlightOn) {
+					GFX_powerOffBacklights(lcd);
+				} else {
+					GFX_powerOnBacklights(lcd);
+				}
+				backlightOn = !backlightOn;
+			}
+		}
+	}
+
+
+	if(changedDisplaySettings) {
+		if(g_oafConfig.advanceDisplayControl && displayControlMode) {
+			//clear framebuffers
+			adjustGammaTableForGba();
+			GFX_waitForVBlank0();
+			GFX_waitForVBlank0();
+		} else {
+			GFX_setBrightness(g_oafConfig.backlight, g_oafConfig.backlight);
+		}
+		changedDisplaySettings = false;
+	} /*else {
+		slowAdjustGammaTableForGba(false);
+	}*/
+}
+
 void oafUpdate(void)
 {
 	LGY_handleOverrides();
-	updateBacklight();
+	adjustDisplaySettings();
 	waitForEvent(g_frameReadyEvent);
 }
 
