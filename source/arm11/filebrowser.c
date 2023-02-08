@@ -25,27 +25,7 @@
 #include "arm11/drivers/hid.h"
 #include "arm11/fmt.h"
 #include "drivers/gfx.h"
-
-
-// Notes on these settings:
-// MAX_ENT_BUF_SIZE should be big enough to hold the average file/dir name length * MAX_DIR_ENTRIES.
-#define MAX_ENT_BUF_SIZE  (1024u * 196) // 196 KiB.
-#define MAX_DIR_ENTRIES   (1000u)
-#define DIR_READ_BLOCKS   (10u)
-#define SCREEN_COLS       (53u - 1) // - 1 because the console inserts a newline after the last line otherwise.
-#define SCREEN_ROWS       (24u)
-
-#define ENT_TYPE_FILE  (0)
-#define ENT_TYPE_DIR   (1)
-
-
-typedef struct
-{
-	u32 num;                       // Total number of entries.
-	char entBuf[MAX_ENT_BUF_SIZE]; // Format: char entryType; char name[X]; // null terminated.
-	char *ptrs[MAX_DIR_ENTRIES];   // For fast sorting.
-} DirList;
-
+#include "arm11/filebrowser.h"
 
 
 int dlistCompare(const void *a, const void *b)
@@ -66,7 +46,7 @@ int dlistCompare(const void *a, const void *b)
 	return res;
 }
 
-static Result scanDir(const char *const path, DirList *const dList, const char *const filter)
+Result scanDir(const char *const path, DirList *const dList, const char *const filter)
 {
 	FILINFO *const fis = (FILINFO*)malloc(sizeof(FILINFO) * DIR_READ_BLOCKS);
 	if(fis == NULL) return RES_OUT_OF_MEM;
@@ -120,7 +100,7 @@ scanEnd:
 	return res;
 }
 
-static void showDirList(const DirList *const dList, u32 start)
+void showDirList(const DirList *const dList, u32 start)
 {
 	// Clear screen.
 	ee_printf("\x1b[2J");

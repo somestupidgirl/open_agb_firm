@@ -26,13 +26,11 @@ A/B/L/R/START/SELECT - GBA buttons, respectively
 SELECT+Y - Dump screen output to `/3ds/open_agb_firm/texture_dump.bmp`
 * If the screen output freezes, press HOME to fix it. This is a hard to track down bug that will be fixed.
 
-X+UP/DOWN - Adjust screen brightness up or down by `backlightSteps` units.
+Y - Cycle through `Advance Video` control settings (if enabled)
 
-X+LEFT - Turn off LCD backlight.
+X+UP/DOWN - Adjust display setting.
 
-X+RIGHT - Turn on LCD backlight.
-
-Hold the X button while launching a game to skip applying patches (if present)
+X+LEFT - Toggle LCD backlight. If `Advanced Video` is emabled, will reset adjusted values to default values
 
 Hold the power button to turn off the 3DS.
 
@@ -76,6 +74,24 @@ Video-related settings.
 `float brightness` - Screen lift
 * Default: `0.0`
 
+### Advance Video
+Advance video-related settings (EXPERIMENTAL! Expect graphical issues!)
+
+`bool advanceDisplayControl` - Enable or disable control of additional display control
+* Default: `false`
+
+`float gbaGammaStep` - How much to adjust the GBA gamma by
+* Default: `0.05`
+
+`float lcdGammaStep` - How much to adjust the LCD gamma by
+* Default: `0.05`
+
+`float contrastStep` - How much to adjust the contrast/gain by
+* Default: `0.05`
+
+`float brightnessStep` - How much to adjust the brightness/lift by
+* Default: `0.05`
+
 ### Game
 Game-specific settings. Only intended to be used in the per-game settings (romName.ini in `/3ds/open_agb_firm/saves`).
 
@@ -104,8 +120,14 @@ Options for advanced users. No pun intended.
   * `15`: None
 
 ## Patches
-open_agb_firm supports automatically applying IPS and UPS patches. To use a patch, rename the patch file to match the ROM file name (without the extension).
+open_agb_firm supports automatically applying IPS and UPS patches. If you only plan to use one patch, you can place it in the same folder as your ROM and rename it to match your ROM's name (without the extension).
 * If you wanted to apply an IPS patch to `example.gba`, rename the patch file to `example.ips`
+* **This will replace any existing save**, so make a backup or make sure saves are compadible
+
+If you want to use multiple patches, place each patch in `/3ds/open_agb_firm/patches/<ROM Name>/`
+* Each patch will have its own save
+* Press X on patch selection screen to skip applying a patch. This will default to using the default game save
+
 
 ## Known Issues
 This section is reserved for a listing of known issues. At present only this remains:
@@ -114,6 +136,7 @@ This section is reserved for a listing of known issues. At present only this rem
 * Save type autodetection may still fail for certain games using EEPROM.
 * Lack of settings.
 * No cheats and other enhancements.
+* Advanced video control causes graphical issues after adjustment
 
 If you happen to stumble over another bug, please [open an issue](https://github.com/profi200/open_agb_firm/issues) or contact profi200 via other platforms.
 
@@ -142,9 +165,6 @@ A: Of course! While open_agb_firm does run with full hardware access, a lot of w
 
 **Q: What games work with open_agb_firm?**\
 A: In theory, all of them, except those that fall within the [hardware limitations](#hardware-limitations).
-
-**Q: How can I increase the brightness?**\
-A: Increase the value of the `backlight` setting in `config.ini`. See [Configuration](#configuration) for more information.
 
 **Q: Why do the colors look off?**\
 A: The default gamma settings are intended to make up for the washed out colors the 3DS LCD has. If they look weird to you, setting the `outGamma` setting to `2.2` might help.
