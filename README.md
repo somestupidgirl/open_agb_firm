@@ -124,7 +124,7 @@ open_agb_firm supports automatically applying IPS and UPS patches. If you only p
 * If you wanted to apply an IPS patch to `example.gba`, rename the patch file to `example.ips`
 * **This will replace any existing save**, so make a backup or make sure saves are compadible
 
-If you want to use multiple patches, place each patch in `/3ds/open_agb_firm/patches/<ROM Name>/` and change the extension to `.patch`
+If you want to use multiple patches, place each patch in `/3ds/open_agb_firm/patches/<ROM Name>/`
 * Each patch will have its own save
 * Press X on patch selection screen to skip applying a patch. This will default to using the default game save
 
